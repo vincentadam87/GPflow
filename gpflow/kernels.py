@@ -26,10 +26,9 @@ from . import settings
 
 from .params import Parameter, Parameterized
 from .decors import params_as_tensors, autoflow
-from .quadrature import mvnquad
 
 
-class Kern(Parameterized):
+class Kernel(Parameterized):
     """
     The basic kernel class. Handles input_dim and active dims, and provides a
     generic '_slice' function to implement them.
@@ -49,7 +48,7 @@ class Kern(Parameterized):
         If active dims is None, it effectively defaults to range(input_dim),
         but we store it as a slice for efficiency.
         """
-        super(Kern, self).__init__(name=name)
+        super().__init__(name=name)
         self.input_dim = int(input_dim)
         if active_dims is None:
             self.active_dims = slice(input_dim)
@@ -63,172 +62,32 @@ class Kern(Parameterized):
 
         self.num_gauss_hermite_points = 20
 
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None]))
+    @autoflow((settings.float_type, [None, None]),
+              (settings.float_type, [None, None]))
     def compute_K(self, X, Z):
         return self.K(X, Z)
 
-    @autoflow((settings.tf_float, [None, None]))
+    @autoflow((settings.float_type, [None, None]))
     def compute_K_symm(self, X):
         return self.K(X)
 
-    @autoflow((settings.tf_float, [None, None]))
+    @autoflow((settings.float_type, [None, None]))
     def compute_Kdiag(self, X):
         return self.Kdiag(X)
 
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float,))
-    def compute_eKdiag(self, X, Xcov=None):
-        return self.eKdiag(X, Xcov)
-
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None]),
-              (settings.tf_float,))
-    def compute_eKxz(self, Z, Xmu, Xcov):
-        return self.eKxz(Z, Xmu, Xcov)
-
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None, None, None]))
-    def compute_exKxz_pairwise(self, Z, Xmu, Xcov):
-        return self.exKxz_pairwise(Z, Xmu, Xcov)
-
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None, None]))
-    def compute_exKxz(self, Z, Xmu, Xcov):
-        return self.exKxz(Z, Xmu, Xcov)
-
-    @autoflow((settings.tf_float, [None, None]),
-              (settings.tf_float, [None, None]),
-              (settings.tf_float,))
-    def compute_eKzxKxz(self, Z, Xmu, Xcov):
-        return self.eKzxKxz(Z, Xmu, Xcov)
-
-    def eKdiag(self, Xmu, Xcov):
+    def on_separate_dims(self, other_kernel):
         """
-        Computes <K_xx>_q(x).
-        :param Xmu: Mean (NxD)
-        :param Xcov: Covariance (NxDxD or NxD)
-        :return: (N)
+        Checks if the dimensions, over which the kernels are specified, overlap.
+        Returns True if they are defined on different/separate dimensions and False otherwise.
         """
-        self._check_quadrature()
-        Xmu, _ = self._slice(Xmu, None)
-        Xcov = self._slice_cov(Xcov)
-        return mvnquad(lambda x: self.Kdiag(x, presliced=True),
-                       Xmu, Xcov,
-                       self.num_gauss_hermite_points, self.input_dim)  # N
+        if isinstance(self.active_dims, slice) or isinstance(other_kernel.active_dims, slice):
+            # Be very conservative for kernels defined over slices of dimensions
+            return False
 
-    def eKxz(self, Z, Xmu, Xcov):
-        """
-        Computes <K_xz>_q(x) using quadrature.
-        :param Z: Fixed inputs (MxD).
-        :param Xmu: X means (NxD).
-        :param Xcov: X covariances (NxDxD or NxD).
-        :return: (NxM)
-        """
-        self._check_quadrature()
-        Xmu, Z = self._slice(Xmu, Z)
-        Xcov = self._slice_cov(Xcov)
-        M = tf.shape(Z)[0]
-        return mvnquad(lambda x: self.K(x, Z, presliced=True), Xmu, Xcov, self.num_gauss_hermite_points,
-                       self.input_dim, Dout=(M,))  # (H**DxNxD, H**D)
+        if np.any(self.active_dims.reshape(-1, 1) == other_kernel.active_dims.reshape(1, -1)):
+            return False
 
-    def exKxz_pairwise(self, Z, Xmu, Xcov):
-        """
-        Computes <x_{t-1} K_{x_t z}>_q(x) for each pair of consecutive X's in
-        Xmu & Xcov.
-        :param Z: Fixed inputs (MxD).
-        :param Xmu: X means (T+1xD).
-        :param Xcov: 2xT+1xDxD. [0, t, :, :] contains covariances for x_t. [1, t, :, :] contains the cross covariances
-        for t and t+1.
-        :return: (TxMxD).
-        """
-        self._check_quadrature()
-        # Slicing is NOT needed here. The desired behaviour is to *still* return an NxMxD matrix. As even when the
-        # kernel does not depend on certain inputs, the output matrix will still contain the outer product between the
-        # mean of x_{t-1} and K_{x_t Z}. The code here will do this correctly automatically, since the quadrature will
-        # still be done over the distribution x_{t-1, t}, only now the kernel will not depend on certain inputs.
-        # However, this does mean that at the time of running this function we need to know the input *size* of Xmu, not
-        # just `input_dim`.
-        M = tf.shape(Z)[0]
-        D = self.input_size if hasattr(self, 'input_size') else self.input_dim  # Number of actual input dimensions
-
-        with tf.control_dependencies([
-            tf.assert_equal(tf.shape(Xmu)[1], tf.constant(D, dtype=settings.tf_int),
-                            message="Numerical quadrature needs to know correct shape of Xmu.")
-        ]):
-            Xmu = tf.identity(Xmu)
-
-        # First, transform the compact representation of Xmu and Xcov into a
-        # list of full distributions.
-        fXmu = tf.concat((Xmu[:-1, :], Xmu[1:, :]), 1)  # Nx2D
-        fXcovt = tf.concat((Xcov[0, :-1, :, :], Xcov[1, :-1, :, :]), 2)  # NxDx2D
-        fXcovb = tf.concat((tf.transpose(Xcov[1, :-1, :, :], (0, 2, 1)), Xcov[0, 1:, :, :]), 2)
-        fXcov = tf.concat((fXcovt, fXcovb), 1)
-        return mvnquad(lambda x: tf.expand_dims(self.K(x[:, :D], Z), 2) *
-                                 tf.expand_dims(x[:, D:], 1),
-                       fXmu, fXcov, self.num_gauss_hermite_points,
-                       2 * D, Dout=(M, D))
-
-    def exKxz(self, Z, Xmu, Xcov):
-        """
-        Computes <x_t K_{x_t z}>_q(x) for the same x_t.
-        :param Z: Fixed inputs (MxD).
-        :param Xmu: X means (TxD).
-        :param Xcov: TxDxD. Contains covariances for each x_t.
-        :return: (TxMxD).
-        """
-        self._check_quadrature()
-        # Slicing is NOT needed here. The desired behaviour is to *still* return an NxMxD matrix.
-        # As even when the kernel does not depend on certain inputs, the output matrix will still
-        # contain the outer product between the mean of x_t and K_{x_t Z}. The code here will
-        # do this correctly automatically, since the quadrature will still be done over the
-        # distribution x_t, only now the kernel will not depend on certain inputs.
-        # However, this does mean that at the time of running this function we need to know the
-        # input *size* of Xmu, not just `input_dim`.
-        M = tf.shape(Z)[0]
-        # Number of actual input dimensions
-        D = self.input_size if hasattr(self, 'input_size') else self.input_dim
-
-        msg = "Numerical quadrature needs to know correct shape of Xmu."
-        assert_shape = tf.assert_equal(tf.shape(Xmu)[1], D, message=msg)
-        with tf.control_dependencies([assert_shape]):
-            Xmu = tf.identity(Xmu)
-
-        def integrand(x):
-            return tf.expand_dims(self.K(x, Z), 2) * tf.expand_dims(x, 1)
-
-        num_points = self.num_gauss_hermite_points
-        return mvnquad(integrand, Xmu, Xcov, num_points, D, Dout=(M, D))
-
-    def eKzxKxz(self, Z, Xmu, Xcov):
-        """
-        Computes <K_zx Kxz>_q(x).
-        :param Z: Fixed inputs MxD.
-        :param Xmu: X means (NxD).
-        :param Xcov: X covariances (NxDxD or NxD).
-        :return: NxMxM
-        """
-        self._check_quadrature()
-        Xmu, Z = self._slice(Xmu, Z)
-        Xcov = self._slice_cov(Xcov)
-        M = tf.shape(Z)[0]
-
-        def KzxKxz(x):
-            Kxz = self.K(x, Z, presliced=True)
-            return tf.expand_dims(Kxz, 2) * tf.expand_dims(Kxz, 1)
-
-        return mvnquad(KzxKxz,
-                       Xmu, Xcov, self.num_gauss_hermite_points,
-                       self.input_dim, Dout=(M, M))
-
-    def _check_quadrature(self):
-        if settings.numerics.ekern_quadrature == "warn":
-            warnings.warn("Using numerical quadrature for kernel expectation of %s. Use gpflow.ekernels instead." %
-                          str(type(self)))
-        if settings.numerics.ekern_quadrature == "error" or self.num_gauss_hermite_points == 0:
-            raise RuntimeError("Settings indicate that quadrature may not be used.")
+        return True
 
     def _slice(self, X, X2):
         """
@@ -276,20 +135,20 @@ class Kern(Parameterized):
         return cov
 
     def __add__(self, other):
-        return Add([self, other])
+        return Sum([self, other])
 
     def __mul__(self, other):
-        return Prod([self, other])
+        return Product([self, other])
 
 
-class Static(Kern):
+class Static(Kernel):
     """
     Kernels who don't depend on the value of the inputs are 'Static'.  The only
     parameter is a variance.
     """
 
     def __init__(self, input_dim, variance=1.0, active_dims=None, name=None):
-        super(Static, self).__init__(input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
         self.variance = Parameter(variance, transform=transforms.positive)
 
     @params_as_tensors
@@ -309,7 +168,7 @@ class White(Static):
             return tf.matrix_diag(d)
         else:
             shape = tf.stack([tf.shape(X)[0], tf.shape(X2)[0]])
-            return tf.zeros(shape, settings.tf_float)
+            return tf.zeros(shape, settings.float_type)
 
 
 class Constant(Static):
@@ -333,7 +192,7 @@ class Bias(Constant):
     pass
 
 
-class Stationary(Kern):
+class Stationary(Kernel):
     """
     Base class for kernels that are stationary, that is, they only depend on
 
@@ -356,14 +215,14 @@ class Stationary(Kern):
         - ARD specifies whether the kernel has one lengthscale per dimension
           (ARD=True) or a single lengthscale (ARD=False).
         """
-        super(Stationary, self).__init__(input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
         self.variance = Parameter(variance, transform=transforms.positive)
         if ARD:
             if lengthscales is None:
-                lengthscales = np.ones(input_dim, dtype=settings.np_float)
+                lengthscales = np.ones(input_dim, dtype=settings.float_type)
             else:
                 # accepts float or array:
-                lengthscales = lengthscales * np.ones(input_dim, dtype=settings.np_float)
+                lengthscales = lengthscales * np.ones(input_dim, dtype=settings.float_type)
             self.lengthscales = Parameter(lengthscales, transform=transforms.positive)
             self.ARD = True
         else:
@@ -410,7 +269,7 @@ class RBF(Stationary):
         return self.variance * tf.exp(-self.square_dist(X, X2) / 2)
 
 
-class Linear(Kern):
+class Linear(Kernel):
     """
     The linear kernel
     """
@@ -423,11 +282,11 @@ class Linear(Kern):
         - active_dims is a list of length input_dim which controls
           which columns of X are used.
         """
-        Kern.__init__(self, input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
         self.ARD = ARD
         if ARD:
             # accept float or array:
-            variance = np.ones(self.input_dim, dtype=settings.np_float) * variance
+            variance = np.ones(self.input_dim, dtype=settings.float_type) * variance
             self.variance = Parameter(variance, transform=transforms.positive)
         else:
             self.variance = Parameter(variance, transform=transforms.positive)
@@ -469,7 +328,7 @@ class Polynomial(Linear):
           which columns of X are used.
         :param ARD: use variance as described
         """
-        super(Polynomial, self).__init__(input_dim, variance, active_dims, ARD, name=name)
+        super().__init__(input_dim, variance, active_dims, ARD, name=name)
         self.degree = degree
         self.offset = Parameter(offset, transform=transforms.positive)
 
@@ -549,7 +408,7 @@ class Cosine(Stationary):
         return self.variance * tf.cos(r)
 
 
-class ArcCosine(Kern):
+class ArcCosine(Kernel):
     """
     The Arc-cosine family of kernels which mimics the computation in neural
     networks. The order parameter specifies the assumed activation function.
@@ -586,7 +445,7 @@ class ArcCosine(Kern):
         - ARD specifies whether the kernel has one weight_variance per dimension
           (ARD=True) or a single weight_variance (ARD=False).
         """
-        super(ArcCosine, self).__init__(input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
 
         if order not in self.implemented_orders:
             raise ValueError('Requested kernel order is not implemented.')
@@ -596,10 +455,10 @@ class ArcCosine(Kern):
         self.bias_variance = Parameter(bias_variance, transform=transforms.positive)
         if ARD:
             if weight_variances is None:
-                weight_variances = np.ones(input_dim, settings.np_float)
+                weight_variances = np.ones(input_dim, settings.float_type)
             else:
                 # accepts float or array:
-                weight_variances = weight_variances * np.ones(input_dim, settings.np_float)
+                weight_variances = weight_variances * np.ones(input_dim, settings.float_type)
             self.weight_variances = Parameter(weight_variances, transform=transforms.positive)
             self.ARD = True
         else:
@@ -654,11 +513,11 @@ class ArcCosine(Kern):
             X, _ = self._slice(X, None)
 
         X_product = self._weighted_product(X)
-        theta = tf.constant(0., settings.tf_float)
+        theta = tf.constant(0., settings.float_type)
         return self.variance * (1. / np.pi) * self._J(theta) * X_product ** self.order
 
 
-class PeriodicKernel(Kern):
+class Periodic(Kernel):
     """
     The periodic kernel. Defined in  Equation (47) of
 
@@ -671,7 +530,7 @@ class PeriodicKernel(Kern):
     def __init__(self, input_dim, period=1.0, variance=1.0,
                  lengthscales=1.0, active_dims=None, name=None):
         # No ARD support for lengthscale or period yet
-        super(PeriodicKernel, self).__init__(input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
         self.variance = Parameter(variance, transform=transforms.positive)
         self.lengthscales = Parameter(lengthscales, transform=transforms.positive)
         self.ARD = False
@@ -698,7 +557,7 @@ class PeriodicKernel(Kern):
         return self.variance * tf.exp(-0.5 * r)
 
 
-class Coregion(Kern):
+class Coregion(Kernel):
     def __init__(self, input_dim, output_dim, rank, active_dims=None, name=None):
         """
         A Coregionalization kernel. The inputs to this kernel are _integers_
@@ -724,12 +583,12 @@ class Coregion(Kern):
         optimization (or MCMC chain) using a random W.
         """
         assert input_dim == 1, "Coregion kernel in 1D only"
-        super(Coregion, self).__init__(input_dim, active_dims, name=name)
+        super().__init__(input_dim, active_dims, name=name)
 
         self.output_dim = output_dim
         self.rank = rank
-        self.W = Parameter(np.zeros((self.output_dim, self.rank), dtype=settings.np_float))
-        self.kappa = Parameter(np.ones(self.output_dim, dtype=settings.np_float), transform=transforms.positive)
+        self.W = Parameter(np.zeros((self.output_dim, self.rank), dtype=settings.float_type))
+        self.kappa = Parameter(np.ones(self.output_dim, dtype=settings.float_type), transform=transforms.positive)
 
     @params_as_tensors
     def K(self, X, X2=None):
@@ -777,9 +636,9 @@ def make_kernel_names(kern_list):
     return names
 
 
-class Combination(Kern):
+class Combination(Kernel):
     """
-    Combine  a list of kernels, e.g. by adding or multiplying (see inheriting
+    Combine a list of kernels, e.g. by adding or multiplying (see inheriting
     classes).
 
     The names of the kernels to be combined are generated from their class
@@ -787,14 +646,14 @@ class Combination(Kern):
     """
 
     def __init__(self, kern_list, name=None):
-        for k in kern_list:
-            assert isinstance(k, Kern), "can only add Kern instances"
+        if not all(isinstance(k, Kernel) for k in kern_list):
+            raise TypeError("can only combine Kernel instances")  # pragma: no cover
 
         input_dim = np.max([k.input_dim
                             if type(k.active_dims) is slice else
                             np.max(k.active_dims) + 1
                             for k in kern_list])
-        super(Combination, self).__init__(input_dim=input_dim, name=name)
+        super().__init__(input_dim=input_dim, name=name)
 
         # add kernels to a list, flattening out instances of this class therein
         self.kern_list = []
@@ -829,7 +688,7 @@ class Combination(Kern):
             return not overlapping
 
 
-class Add(Combination):
+class Sum(Combination):
     def K(self, X, X2=None, presliced=False):
         return reduce(tf.add, [k.K(X, X2) for k in self.kern_list])
 
@@ -837,9 +696,31 @@ class Add(Combination):
         return reduce(tf.add, [k.Kdiag(X) for k in self.kern_list])
 
 
-class Prod(Combination):
+class Product(Combination):
     def K(self, X, X2=None, presliced=False):
         return reduce(tf.multiply, [k.K(X, X2) for k in self.kern_list])
 
     def Kdiag(self, X, presliced=False):
         return reduce(tf.multiply, [k.Kdiag(X) for k in self.kern_list])
+
+
+def make_deprecated_class(oldname, NewClass):
+    """
+    Returns a class that raises NotImplementedError on instantiation.
+    e.g.:
+    >>> Kern = make_deprecated_class("Kern", Kernel)
+    """
+    msg = ("{module}.{} has been renamed to {module}.{}"
+           .format(oldname, NewClass.__name__, module=NewClass.__module__))
+
+    class OldClass(NewClass):
+        def __new__(cls, *args, **kwargs):
+            raise NotImplementedError(msg)
+    OldClass.__doc__ = msg
+    OldClass.__qualname__ = OldClass.__name__ = oldname
+    return OldClass
+
+Kern = make_deprecated_class("Kern", Kernel)
+Add = make_deprecated_class("Add", Sum)
+Prod = make_deprecated_class("Prod", Product)
+PeriodicKernel = make_deprecated_class("PeriodicKernel", Periodic)

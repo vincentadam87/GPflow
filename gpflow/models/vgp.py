@@ -61,13 +61,12 @@ class VGP(GPModel):
 
         X = DataHolder(X)
         Y = DataHolder(Y)
-        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, **kwargs)
+        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, num_latent, **kwargs)
         self.num_data = X.shape[0]
-        self.num_latent = num_latent or Y.shape[1]
 
         self.q_mu = Parameter(np.zeros((self.num_data, self.num_latent)))
         q_sqrt = np.array([np.eye(self.num_data)
-                           for _ in range(self.num_latent)]).swapaxes(0, 2)
+                           for _ in range(self.num_latent)])
         transform = transforms.LowerTriangular(self.num_data, self.num_latent)
         self.q_sqrt = Parameter(q_sqrt, transform=transform)
 
@@ -105,13 +104,13 @@ class VGP(GPModel):
         KL = gauss_kl(self.q_mu, self.q_sqrt)
 
         # Get conditionals
-        K = self.kern.K(self.X) + tf.eye(self.num_data, dtype=settings.tf_float) * \
+        K = self.kern.K(self.X) + tf.eye(self.num_data, dtype=settings.float_type) * \
             settings.numerics.jitter_level
         L = tf.cholesky(K)
 
         fmean = tf.matmul(L, self.q_mu) + self.mean_function(self.X)  # NN,ND->ND
 
-        q_sqrt_dnn = tf.matrix_band_part(tf.transpose(self.q_sqrt, [2, 0, 1]), -1, 0)  # D x N x N
+        q_sqrt_dnn = tf.matrix_band_part(self.q_sqrt, -1, 0)  # D x N x N
 
         L_tiled = tf.tile(tf.expand_dims(L, 0), tf.stack([self.num_latent, 1, 1]))
 
@@ -128,7 +127,7 @@ class VGP(GPModel):
     @params_as_tensors
     def _build_predict(self, Xnew, full_cov=False):
         mu, var = conditional(Xnew, self.X, self.kern, self.q_mu,
-                              q_sqrt=self.q_sqrt, full_cov=full_cov, whiten=True)
+                              q_sqrt=self.q_sqrt, full_cov=full_cov, white=True)
         return mu + self.mean_function(Xnew), var
 
 
@@ -210,7 +209,7 @@ class VGP_opper_archambeau(GPModel):
         f_mean = K_alpha + self.mean_function(self.X)
 
         # compute the variance for each of the outputs
-        I = tf.tile(tf.expand_dims(tf.eye(self.num_data, dtype=settings.tf_float), 0),
+        I = tf.tile(tf.expand_dims(tf.eye(self.num_data, dtype=settings.float_type), 0),
                     [self.num_latent, 1, 1])
         A = I + tf.expand_dims(tf.transpose(self.q_lambda), 1) * \
             tf.expand_dims(tf.transpose(self.q_lambda), 2) * K

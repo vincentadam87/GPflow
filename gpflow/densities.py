@@ -47,11 +47,11 @@ def gamma(shape, scale, x):
 
 
 def student_t(x, mean, scale, deg_free):
-    const = tf.lgamma(tf.cast((deg_free + 1.) * 0.5, settings.tf_float))\
-        - tf.lgamma(tf.cast(deg_free * 0.5, settings.tf_float))\
-        - 0.5*(tf.log(tf.square(scale)) + tf.cast(tf.log(deg_free), settings.tf_float)
+    const = tf.lgamma(tf.cast((deg_free + 1.) * 0.5, settings.float_type))\
+        - tf.lgamma(tf.cast(deg_free * 0.5, settings.float_type))\
+        - 0.5*(tf.log(tf.square(scale)) + tf.cast(tf.log(deg_free), settings.float_type)
                + np.log(np.pi))
-    const = tf.cast(const, settings.tf_float)
+    const = tf.cast(const, settings.float_type)
     return const - 0.5*(deg_free + 1.) * \
         tf.log(1. + (1. / deg_free) * (tf.square((x - mean) / scale)))
 
@@ -71,18 +71,25 @@ def laplace(mu, sigma, y):
 
 def multivariate_normal(x, mu, L):
     """
-    L is the Cholesky decomposition of the covariance.
+    Computes the log-density of a multivariate normal.
+    :param x  : D or DxN sample(s) for which we want the density
+    :param mu : D or DxN mean(s) of the normal distribution
+    :param L  : DxD Cholesky decomposition of the covariance matrix
+    :return p : N vector of log densities for each of the N x's and/or mu's
 
-    x and mu are either vectors (ndim=1) or matrices. In the matrix case, we
-    assume independence over the *columns*: the number of rows must match the
-    size of L.
+    x and mu are either vectors or matrices. If both are vectors ((N,) or (N,1)):
+    p[0] = log pdf(x) where x ~ N(mu, LL^T)
+    If at least one is a matrix, we assume independence over the *columns*:
+    the number of rows must match the size of L. Broadcasting behaviour:
+    p[n] = log pdf of:
+    x[n] ~ N(mu, LL^T) or x ~ N(mu[n], LL^T) or x[n] ~ N(mu[n], LL^T)
     """
+    x  = tf.cond(tf.rank(x)  < 2, lambda: x[:, None],  lambda: x)
+    mu = tf.cond(tf.rank(mu) < 2, lambda: mu[:, None], lambda: mu)
     d = x - mu
     alpha = tf.matrix_triangular_solve(L, d, lower=True)
-    num_col = 1 if tf.rank(x) == 1 else tf.shape(x)[1]
-    num_col = tf.cast(num_col, settings.tf_float)
-    num_dims = tf.cast(tf.shape(x)[0], settings.tf_float)
-    ret = - 0.5 * num_dims * num_col * np.log(2 * np.pi)
-    ret += - num_col * tf.reduce_sum(tf.log(tf.matrix_diag_part(L)))
-    ret += - 0.5 * tf.reduce_sum(tf.square(alpha))
-    return ret
+    num_dims = tf.cast(tf.shape(d)[0], L.dtype)
+    p = - 0.5 * tf.reduce_sum(tf.square(alpha), 0)
+    p -= 0.5 * num_dims * np.log(2 * np.pi)
+    p -= tf.reduce_sum(tf.log(tf.matrix_diag_part(L)))
+    return p

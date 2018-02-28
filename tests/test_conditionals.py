@@ -34,10 +34,10 @@ class DiagsTest(GPflowTestCase):
         num_data = 3
         k = gpflow.kernels.Matern32(1) + gpflow.kernels.White(1)
         k.white.variance = 0.01
-        X = tf.placeholder(settings.np_float)
-        mu = tf.placeholder(settings.np_float)
-        Xs = tf.placeholder(settings.np_float)
-        sqrt = tf.placeholder(settings.np_float, shape=[num_data, num_latent])
+        X = tf.placeholder(settings.float_type)
+        mu = tf.placeholder(settings.float_type)
+        Xs = tf.placeholder(settings.float_type)
+        sqrt = tf.placeholder(settings.float_type, shape=[num_data, num_latent])
 
         rng = np.random.RandomState(0)
         X_data = rng.randn(num_data, 1)
@@ -50,7 +50,6 @@ class DiagsTest(GPflowTestCase):
 
         #the chols are diagonal matrices, with the same entries as the diag representation.
         chol = tf.stack([tf.diag(sqrt[:, i]) for i in range(num_latent)])
-        chol = tf.transpose(chol, perm=[1, 2, 0])
         return Xs, X, k, mu, sqrt, chol, feed_dict
 
     def test_whiten(self):
@@ -60,7 +59,7 @@ class DiagsTest(GPflowTestCase):
             Fstar_mean_1, Fstar_var_1 = gpflow.conditionals.conditional(
                 Xs, X, k, mu, q_sqrt=sqrt)
             Fstar_mean_2, Fstar_var_2 = gpflow.conditionals.conditional(
-                Xs, X, k, mu, q_sqrt=chol, whiten=True)
+                Xs, X, k, mu, q_sqrt=chol, white=True)
 
             mean_diff = sess.run(Fstar_mean_1 - Fstar_mean_2, feed_dict=feed_dict)
             var_diff = sess.run(Fstar_var_1 - Fstar_var_2, feed_dict=feed_dict)
@@ -92,9 +91,9 @@ class WhitenTest(GPflowTestCase):
 
         num_data = 10
         num_test_data = 100
-        X = tf.placeholder(settings.np_float, [num_data, 1])
-        F = tf.placeholder(settings.np_float, [num_data, 1])
-        Xs = tf.placeholder(settings.np_float, [num_test_data, 1])
+        X = tf.placeholder(settings.float_type, [num_data, 1])
+        F = tf.placeholder(settings.float_type, [num_data, 1])
+        Xs = tf.placeholder(settings.float_type, [num_test_data, 1])
 
         rng = np.random.RandomState(0)
         X_data = rng.randn(num_data, 1)
@@ -115,11 +114,11 @@ class WhitenTest(GPflowTestCase):
             Xs, X, F, k, num_data, feed_dict = self.prepare()
             k.compile(session=sess)
 
-            K = k.K(X) + tf.eye(num_data, dtype=settings.np_float) * 1e-6
+            K = k.K(X) + tf.eye(num_data, dtype=settings.float_type) * 1e-6
             L = tf.cholesky(K)
             V = tf.matrix_triangular_solve(L, F, lower=True)
             Fstar_mean, Fstar_var = gpflow.conditionals.conditional(Xs, X, k, F)
-            Fstar_w_mean, Fstar_w_var = gpflow.conditionals.conditional(Xs, X, k, V, whiten=True)
+            Fstar_w_mean, Fstar_w_var = gpflow.conditionals.conditional(Xs, X, k, V, white=True)
 
             mean1, var1 = sess.run([Fstar_w_mean, Fstar_w_var], feed_dict=feed_dict)
             mean2, var2 = sess.run([Fstar_mean, Fstar_var], feed_dict=feed_dict)
@@ -140,20 +139,19 @@ class WhitenTestGaussian(WhitenTest):
             Xs, X, F, k, num_data, feed_dict = self.prepare()
             k.compile(session=sess)
 
-            F_sqrt = tf.placeholder(settings.np_float, [num_data, 1])
+            F_sqrt = tf.placeholder(settings.float_type, [num_data, 1])
             F_sqrt_data = rng.rand(num_data, 1)
             feed_dict[F_sqrt] = F_sqrt_data
 
             K = k.K(X)
             L = tf.cholesky(K)
             V = tf.matrix_triangular_solve(L, F, lower=True)
-            V_chol = tf.matrix_triangular_solve(L, tf.diag(F_sqrt[:, 0]), lower=True)
-            V_sqrt = tf.expand_dims(V_chol, 2)
+            V_sqrt = tf.matrix_triangular_solve(L, tf.diag(F_sqrt[:, 0]), lower=True)[None, :, :]
 
             Fstar_mean, Fstar_var = gpflow.conditionals.conditional(
                 Xs, X, k, F, q_sqrt=F_sqrt)
             Fstar_w_mean, Fstar_w_var = gpflow.conditionals.conditional(
-                Xs, X, k, V, q_sqrt=V_sqrt, whiten=True)
+                Xs, X, k, V, q_sqrt=V_sqrt, white=True)
 
             mean_difference = sess.run(Fstar_w_mean - Fstar_mean, feed_dict=feed_dict)
             var_difference = sess.run(Fstar_w_var - Fstar_var, feed_dict=feed_dict)

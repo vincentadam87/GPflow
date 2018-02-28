@@ -61,7 +61,7 @@ class InducingPoints(InducingFeature):
         :param Z: the initial positions of the inducing points, size M x D
         """
         super().__init__()
-        self.Z = Parameter(Z)
+        self.Z = Parameter(Z, dtype=settings.float_type)
 
     def __len__(self):
         return self.Z.shape[0]
@@ -77,13 +77,6 @@ class InducingPoints(InducingFeature):
         Kzx = kern.K(self.Z, Xnew)
         return Kzx
 
-    @decors.params_as_tensors
-    def eKfu(self, kern, Xmu, Xcov):
-        return kern.eKxz(self.Z, Xmu, Xcov)
-
-    @decors.params_as_tensors
-    def eKufKfu(self, kern, Xmu, Xcov):
-        return kern.eKzxKxz(self.Z, Xmu, Xcov)
 
 class Multiscale(InducingPoints):
     """
@@ -142,7 +135,7 @@ class Multiscale(InducingPoints):
                         kern.lengthscales))
                 d = self._cust_square_dist(Zmu, Zmu, sc)
                 Kzz = kern.variance * tf.exp(-d / 2) * tf.reduce_prod(kern.lengthscales / sc, 2)
-                Kzz += jitter * tf.eye(len(self), dtype=settings.tf_float)
+                Kzz += jitter * tf.eye(len(self), dtype=settings.float_type)
             return Kzz
         else:
             raise NotImplementedError(
@@ -150,7 +143,7 @@ class Multiscale(InducingPoints):
 
 
 @singledispatch
-def conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=None, whiten=False):
+def conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=None, white=False):
     """
     Note the changed function signature compared to conditionals.conditional()
     to allow for single dispatch on the first argument.
@@ -160,7 +153,7 @@ def conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=None, whiten=Fals
 
 @conditional.register(InducingPoints)
 @conditional.register(Multiscale)
-def default_feature_conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=None, whiten=False):
+def default_feature_conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=None, white=False):
     """
     Uses the same code path as conditionals.conditional(), except Kuu/Kuf
     matrices are constructed using the feature.
@@ -170,7 +163,7 @@ def default_feature_conditional(feat, kern, Xnew, f, *, full_cov=False, q_sqrt=N
     ...             gpflow.features.default_feature_conditional)
     """
     return conditionals.feature_conditional(Xnew, feat, kern, f, full_cov=full_cov, q_sqrt=q_sqrt,
-                                            whiten=whiten)
+                                            white=white)
 
 
 def inducingpoint_wrapper(feat, Z):

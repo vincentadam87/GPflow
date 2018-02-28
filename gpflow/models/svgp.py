@@ -79,21 +79,20 @@ class SVGP(GPModel):
             Y = Minibatch(Y, batch_size=minibatch_size, seed=0)
 
         # init the super class, accept args
-        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, **kwargs)
+        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, num_latent, **kwargs)
         self.num_data = num_data or X.shape[0]
         self.q_diag, self.whiten = q_diag, whiten
         self.feature = features.inducingpoint_wrapper(feat, Z)
-        self.num_latent = num_latent or Y.shape[1]
 
         # init variational parameters
         num_inducing = len(self.feature)
-        self.q_mu = Parameter(np.zeros((num_inducing, self.num_latent), dtype=settings.np_float))
+        self.q_mu = Parameter(np.zeros((num_inducing, self.num_latent), dtype=settings.float_type))
         if self.q_diag:
-            self.q_sqrt = Parameter(np.ones((num_inducing, self.num_latent), dtype=settings.np_float),
-                                transforms.positive)
+            self.q_sqrt = Parameter(np.ones((num_inducing, self.num_latent), dtype=settings.float_type),
+                                    transforms.positive)
         else:
-            q_sqrt = np.array([np.eye(num_inducing, dtype=settings.np_float)
-                               for _ in range(self.num_latent)]).swapaxes(0, 2)
+            q_sqrt = np.array([np.eye(num_inducing, dtype=settings.float_type)
+                               for _ in range(self.num_latent)])
             self.q_sqrt = Parameter(q_sqrt, transform=transforms.LowerTriangular(num_inducing, self.num_latent))
 
     @params_as_tensors
@@ -120,12 +119,12 @@ class SVGP(GPModel):
         var_exp = self.likelihood.variational_expectations(fmean, fvar, self.Y)
 
         # re-scale for minibatch size
-        scale = tf.cast(self.num_data, settings.tf_float) / tf.cast(tf.shape(self.X)[0], settings.tf_float)
+        scale = tf.cast(self.num_data, settings.float_type) / tf.cast(tf.shape(self.X)[0], settings.float_type)
 
         return tf.reduce_sum(var_exp) * scale - KL
 
     @params_as_tensors
     def _build_predict(self, Xnew, full_cov=False):
         mu, var = features.conditional(self.feature, self.kern, Xnew, self.q_mu,
-                                       q_sqrt=self.q_sqrt, full_cov=full_cov, whiten=self.whiten)
+                                       q_sqrt=self.q_sqrt, full_cov=full_cov, white=self.whiten)
         return mu + self.mean_function(Xnew), var

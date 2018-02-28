@@ -111,8 +111,7 @@ class TestSVGP(GPflowTestCase):
             qsqrt = (qsqrt**2) * 0.01
             m1.q_sqrt = qsqrt
             m1.q_mu = qmean
-            m2.q_sqrt = np.array([np.diag(qsqrt[:, 0]),
-                                  np.diag(qsqrt[:, 1])]).swapaxes(0, 2)
+            m2.q_sqrt = np.array([np.diag(qsqrt[:, 0]), np.diag(qsqrt[:, 1])])
             m2.q_mu = qmean
 
             obj1 = session.run(m1.objective, feed_dict=m1.feeds)
@@ -141,7 +140,7 @@ class TestSVGP(GPflowTestCase):
             qsqrt = (qsqrt**2)*0.01
             m1.q_sqrt = qsqrt
             m1.q_mu = qmean
-            m2.q_sqrt = np.array([np.diag(qsqrt[:, 0]), np.diag(qsqrt[:, 1])]).swapaxes(0, 2)
+            m2.q_sqrt = np.array([np.diag(qsqrt[:, 0]), np.diag(qsqrt[:, 1])])
             m2.q_mu = qmean
             obj1 = session.run(m1.objective, feed_dict=m1.feeds)
             obj2 = session.run(m2.objective, feed_dict=m2.feeds)
@@ -204,9 +203,9 @@ class TestStochasticGradients(GPflowTestCase):
         return indexedModel
 
     def check_models_close(self, m1, m2, tolerance=1e-2):
-        m1_params = {p.full_name: p for p in list(m1.trainable_parameters)}
-        m2_params = {p.full_name: p for p in list(m2.trainable_parameters)}
-        if set(m1_params.keys()) != set(m2_params.keys()):
+        m1_params = {p.pathname: p for p in list(m1.trainable_parameters)}
+        m2_params = {p.pathname: p for p in list(m2.trainable_parameters)}
+        if set(m2_params.keys()) != set(m2_params.keys()):
             return False
         for key in m1_params:
             p1 = m1_params[key]

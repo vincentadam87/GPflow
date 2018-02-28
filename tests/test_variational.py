@@ -146,7 +146,7 @@ class VariationalUnivariateTest(GPflowTestCase):
                                 self.X, self.Z, m.kern, m.q_mu, q_sqrt=m.q_sqrt)
                         else:
                             fmean_func, fvar_func = gpflow.conditionals.conditional(
-                                self.X, self.Z, m.kern, m.q_mu, q_sqrt=m.q_sqrt, whiten=True)
+                                self.X, self.Z, m.kern, m.q_mu, q_sqrt=m.q_sqrt, white=True)
                     mean_value = fmean_func.eval(session=sess)[0, 0]
                     var_value = fvar_func.eval(session=sess)[0, 0]
                     assert_allclose(mean_value - self.posteriorMean, 0, atol=4)
@@ -183,7 +183,7 @@ class VariationalMultivariateTest(GPflowTestCase):
         if is_diagonal:
             m.q_sqrt = self.q_sqrt_diag
         else:
-            m.q_sqrt = self.q_sqrt_full[:, :, None]
+            m.q_sqrt = self.q_sqrt_full[None, :, :]
         m.q_mu = self.q_mean
         return m
 

@@ -49,13 +49,11 @@ class GPMC(GPModel):
         """
         X = DataHolder(X)
         Y = DataHolder(Y)
-        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, **kwargs)
+        GPModel.__init__(self, X, Y, kern, likelihood, mean_function, num_latent, **kwargs)
         self.num_data = X.shape[0]
-        self.num_latent = num_latent or Y.shape[1]
         self.V = Parameter(np.zeros((self.num_data, self.num_latent)))
         self.V.prior = Gaussian(0., 1.)
 
-    # TODO(@awav): CHECK IT.
     def compile(self, session=None):
         """
         Before calling the standard compile function, check to see if the size
@@ -82,7 +80,7 @@ class GPMC(GPModel):
         """
         K = self.kern.K(self.X)
         L = tf.cholesky(
-            K + tf.eye(tf.shape(self.X)[0], dtype=settings.tf_float) * settings.numerics.jitter_level)
+            K + tf.eye(tf.shape(self.X)[0], dtype=settings.float_type) * settings.numerics.jitter_level)
         F = tf.matmul(L, self.V) + self.mean_function(self.X)
 
         return tf.reduce_sum(self.likelihood.logp(F, self.Y))
@@ -101,5 +99,5 @@ class GPMC(GPModel):
         """
         mu, var = conditional(Xnew, self.X, self.kern, self.V,
                               full_cov=full_cov,
-                              q_sqrt=None, whiten=True)
+                              q_sqrt=None, white=True)
         return mu + self.mean_function(Xnew), var

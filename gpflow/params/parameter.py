@@ -290,11 +290,19 @@ class Parameter(Node):
                 return self._read_parameter_tensor(session)
         return self._value
 
+    def as_pandas_table(self):
+        column_names = ['class', 'prior', 'transform', 'trainable', 'shape', 'fixed_shape', 'value']
+        column_values = [self.__class__.__name__, str(self.prior), str(self.transform),
+                         self.trainable, self.shape, self.fixed_shape, self.value]
+        column_values = [[value] for value in column_values]
+        df = misc.pretty_pandas_table([self.pathname], column_names, column_values)
+        return df
+
     def _valid_input(self, value, dtype=None):
         if not misc.is_valid_param_value(value):
             msg = 'The value must be either a tensorflow variable, an array or a scalar.'
             raise ValueError(msg)
-        cast = False if dtype is None else True
+        cast = not (dtype is None)
         is_built = False
         shape = None
         if hasattr(self, '_value'): # The parameter has not initialized yet.
@@ -308,13 +316,14 @@ class Parameter(Node):
                 msg = 'The value has different data type "{0}". Parameter type is "{1}".'
                 raise ValueError(msg.format(value.dtype, inner_dtype))
             cast = False
-            dtype = self._value.dtype
+            dtype = inner_dtype
         if misc.is_number(value):
-            num_type = misc.normalize_num_type(np.result_type(value).type)
+            value_type = np.result_type(value).type
+            num_type = misc.normalize_num_type(value_type)
             dtype = num_type if dtype is None else dtype
             value = np.array(value, dtype=dtype)
         elif misc.is_list(value):
-            dtype = settings.np_float if dtype is None else dtype
+            dtype = settings.float_type if dtype is None else dtype
             value = np.array(value, dtype=dtype)
         elif cast:
             value = value.astype(dtype)
@@ -324,7 +333,7 @@ class Parameter(Node):
         return value
 
     def _clear(self):
-        self._reset_name()
+        self.reset_name()
         self._externally_defined = False
         self._is_initialized_tensor = None
         self._initial_value_tensor = None
@@ -384,7 +393,7 @@ class Parameter(Node):
         prior_name = 'prior'
 
         if self.prior is None:
-            return tf.constant(0.0, settings.tf_float, name=prior_name)
+            return tf.constant(0.0, settings.float_type, name=prior_name)
 
         log_jacobian = self.transform.log_jacobian_tensor(unconstrained_tensor)
         logp_var = self.prior.logp(constrained_tensor)
@@ -431,7 +440,7 @@ class Parameter(Node):
         return self.transform.backward(value)
 
     def _parameter_name(self):
-        return '/'.join([self.hidden_full_name, 'unconstrained'])
+        return misc.tensor_name(self.tf_pathname, 'unconstrained')
 
     def _set_parameter_tensor(self, tensor):
         self._unconstrained_tensor = tensor
@@ -443,55 +452,13 @@ class Parameter(Node):
 
         is_built = self.is_built_coherence(self.graph)
         if is_built is Build.YES:
-            raise GPflowError('Parameter "{}" has already been compiled.'.format(self.full_name))
+            raise GPflowError('Parameter "{}" has already been compiled.'.format(self.pathname))
 
         name = attr.value
         if value is not None and not isinstance(value, attr.interface):
             msg = 'Attribute "{0}" must implement interface "{1}".'
             raise GPflowError(msg.format(name, attr.interface))
         object.__setattr__(self, name, value)
-
-    def _html_table_rows(self, name_prefix=''):
-        html = "<tr>"
-        html += "<td>{0}</td>".format(name_prefix + self.full_name)
-        html += "<td>{0}</td>".format(str(self.read_value()).replace('\n', '</br>'))
-        html += "<td>{0}</td>".format(str(self.prior))
-        html += "<td>{0}</td>".format('[trainable]' if self.trainable else str(self.transform))
-        html += "</tr>"
-        return html
-
-    def _format_parameter(self, **kwargs):
-        begin = '<{otype} name:\033[1m{name}\033[0m'.format(
-            otype=self.__class__.__name__, name=self.full_name)
-        if self._externally_defined:
-            begin += ' [external tensor]'
-        if self._externally_defined:
-            end = ' value: unknown'
-        else:
-            # hijack numpy print options for a moment
-            opt = np.get_printoptions()
-            np.set_printoptions(threshold=6)
-            value_repr = self.read_value().__repr__()
-            np.set_printoptions(**opt)
-
-            #reformat numpy repr to our own:
-            value_repr = value_repr.replace('\n', '\n ')\
-                    .replace('array', '')\
-                    .replace('(', '').replace(')', '')
-            end = '>\nvalue: {value}'.format(value=value_repr)
-        args = {}
-        body = ''
-        for key, value in kwargs.items():
-            if isinstance(value, bool):
-                if not value:
-                    continue
-                arg_value = '[{}]'.format(key)
-                body = ' {{{key}}}'.format(key=key) + body
-            else:
-                arg_value = '{key}:{value}'.format(key=key, value=value)
-                body += ' {{{key}}}'.format(key=key)
-            args[key] = arg_value
-        return (begin + body + end).format(**args)
 
     def __setattr__(self, name, value):
         try:
@@ -503,11 +470,7 @@ class Parameter(Node):
         object.__setattr__(self, name, value)
 
     def __str__(self):
-        return self._format_parameter(
-            trainable=self.trainable,
-            shape=self.shape,
-            transform=self.transform,
-            prior=self.prior)
+        return str(self.as_pandas_table())
 
     @property
     def fixed(self):

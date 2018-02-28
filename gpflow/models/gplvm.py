@@ -5,10 +5,13 @@ from .. import settings
 from .. import likelihoods
 from .. import transforms
 from .. import kernels
+from .. import features
 
 from ..params import Parameter
 from ..decors import params_as_tensors
 from ..mean_functions import Zero
+from ..expectations import expectation
+from ..probability_distributions import DiagonalGaussian
 
 from .model import GPModel
 from .gpr import GPR
@@ -70,7 +73,8 @@ class BayesianGPLVM(GPModel):
         #                    diag_transform)
         assert X_var.ndim == 2
         self.X_var = Parameter(X_var, transform=transforms.positive)
-        self.num_data = X_mean.shape[0]
+
+        self.num_data, self.num_latent = X_mean.shape
         self.output_dim = Y.shape[1]
 
         assert np.all(X_mean.shape == X_var.shape)
@@ -81,10 +85,10 @@ class BayesianGPLVM(GPModel):
         if Z is None:
             # By default we initialize by subset of initial latent points
             Z = np.random.permutation(X_mean.copy())[:M]
-        else:
-            assert Z.shape[0] == M
-        self.Z = Parameter(Z)
-        self.num_latent = Z.shape[1]
+
+        self.feature = features.InducingPoints(Z)
+
+        assert len(self.feature) == M
         assert X_mean.shape[1] == self.num_latent
 
         # deal with parameters for the prior mean variance of X
@@ -93,8 +97,8 @@ class BayesianGPLVM(GPModel):
         if X_prior_var is None:
             X_prior_var = np.ones((self.num_data, self.num_latent))
 
-        self.X_prior_mean = np.asarray(np.atleast_1d(X_prior_mean), dtype=settings.np_float)
-        self.X_prior_var = np.asarray(np.atleast_1d(X_prior_var), dtype=settings.np_float)
+        self.X_prior_mean = np.asarray(np.atleast_1d(X_prior_mean), dtype=settings.float_type)
+        self.X_prior_var = np.asarray(np.atleast_1d(X_prior_var), dtype=settings.float_type)
 
         assert self.X_prior_mean.shape[0] == self.num_data
         assert self.X_prior_mean.shape[1] == self.num_latent
@@ -107,11 +111,13 @@ class BayesianGPLVM(GPModel):
         Construct a tensorflow function to compute the bound on the marginal
         likelihood.
         """
-        num_inducing = tf.shape(self.Z)[0]
-        psi0 = tf.reduce_sum(self.kern.eKdiag(self.X_mean, self.X_var), 0)
-        psi1 = self.kern.eKxz(self.Z, self.X_mean, self.X_var)
-        psi2 = tf.reduce_sum(self.kern.eKzxKxz(self.Z, self.X_mean, self.X_var), 0)
-        Kuu = self.kern.K(self.Z) + tf.eye(num_inducing, dtype=settings.tf_float) * settings.numerics.jitter_level
+        pX = DiagonalGaussian(self.X_mean, self.X_var)
+
+        num_inducing = len(self.feature)
+        psi0 = tf.reduce_sum(expectation(pX, self.kern))
+        psi1 = expectation(pX, (self.kern, self.feature))
+        psi2 = tf.reduce_sum(expectation(pX, (self.kern, self.feature), (self.kern, self.feature)), axis=0)
+        Kuu = self.feature.Kuu(self.kern, jitter=settings.numerics.jitter_level)
         L = tf.cholesky(Kuu)
         sigma2 = self.likelihood.variance
         sigma = tf.sqrt(sigma2)
@@ -120,22 +126,22 @@ class BayesianGPLVM(GPModel):
         A = tf.matrix_triangular_solve(L, tf.transpose(psi1), lower=True) / sigma
         tmp = tf.matrix_triangular_solve(L, psi2, lower=True)
         AAT = tf.matrix_triangular_solve(L, tf.transpose(tmp), lower=True) / sigma2
-        B = AAT + tf.eye(num_inducing, dtype=settings.tf_float)
+        B = AAT + tf.eye(num_inducing, dtype=settings.float_type)
         LB = tf.cholesky(B)
         log_det_B = 2. * tf.reduce_sum(tf.log(tf.matrix_diag_part(LB)))
         c = tf.matrix_triangular_solve(LB, tf.matmul(A, self.Y), lower=True) / sigma
 
         # KL[q(x) || p(x)]
         dX_var = self.X_var if len(self.X_var.get_shape()) == 2 else tf.matrix_diag_part(self.X_var)
-        NQ = tf.cast(tf.size(self.X_mean), settings.tf_float)
-        D = tf.cast(tf.shape(self.Y)[1], settings.tf_float)
+        NQ = tf.cast(tf.size(self.X_mean), settings.float_type)
+        D = tf.cast(tf.shape(self.Y)[1], settings.float_type)
         KL = -0.5 * tf.reduce_sum(tf.log(dX_var)) \
              + 0.5 * tf.reduce_sum(tf.log(self.X_prior_var)) \
              - 0.5 * NQ \
              + 0.5 * tf.reduce_sum((tf.square(self.X_mean - self.X_prior_mean) + dX_var) / self.X_prior_var)
 
         # compute log marginal bound
-        ND = tf.cast(tf.size(self.Y), settings.tf_float)
+        ND = tf.cast(tf.size(self.Y), settings.float_type)
         bound = -0.5 * ND * tf.log(2 * np.pi * sigma2)
         bound += -0.5 * D * log_det_B
         bound += -0.5 * tf.reduce_sum(tf.square(self.Y)) / sigma2
@@ -153,11 +159,13 @@ class BayesianGPLVM(GPModel):
         there are notes in the SGPR notebook.
         :param Xnew: Point to predict at.
         """
-        num_inducing = tf.shape(self.Z)[0]
-        psi1 = self.kern.eKxz(self.Z, self.X_mean, self.X_var)
-        psi2 = tf.reduce_sum(self.kern.eKzxKxz(self.Z, self.X_mean, self.X_var), 0)
-        Kuu = self.kern.K(self.Z) + tf.eye(num_inducing, dtype=settings.tf_float) * settings.numerics.jitter_level
-        Kus = self.kern.K(self.Z, Xnew)
+        pX = DiagonalGaussian(self.X_mean, self.X_var)
+
+        num_inducing = len(self.feature)
+        psi1 = expectation(pX, (self.kern, self.feature))
+        psi2 = tf.reduce_sum(expectation(pX, (self.kern, self.feature), (self.kern, self.feature)), axis=0)
+        Kuu = self.feature.Kuu(self.kern, jitter=settings.numerics.jitter_level)
+        Kus = self.feature.Kuf(self.kern, Xnew)
         sigma2 = self.likelihood.variance
         sigma = tf.sqrt(sigma2)
         L = tf.cholesky(Kuu)
@@ -165,7 +173,7 @@ class BayesianGPLVM(GPModel):
         A = tf.matrix_triangular_solve(L, tf.transpose(psi1), lower=True) / sigma
         tmp = tf.matrix_triangular_solve(L, psi2, lower=True)
         AAT = tf.matrix_triangular_solve(L, tf.transpose(tmp), lower=True) / sigma2
-        B = AAT + tf.eye(num_inducing, dtype=settings.tf_float)
+        B = AAT + tf.eye(num_inducing, dtype=settings.float_type)
         LB = tf.cholesky(B)
         c = tf.matrix_triangular_solve(LB, tf.matmul(A, self.Y), lower=True) / sigma
         tmp1 = tf.matrix_triangular_solve(L, Kus, lower=True)
@@ -193,8 +201,6 @@ def PCA_reduce(X, Q):
     :return: PCA projection array of size N x Q.
     """
     assert Q <= X.shape[1], 'Cannot have more latent dimensions than observed'
-    evecs, evals = np.linalg.eigh(np.cov(X.T))
-    i = np.argsort(evecs)[::-1]
-    W = evals[:, i]
-    W = W[:, :Q]
+    evals, evecs = np.linalg.eigh(np.cov(X.T))
+    W = evecs[:, -Q:]
     return (X - X.mean(0)).dot(W)
