@@ -97,7 +97,7 @@ class Likelihood(Parameterized):
         """
         gh_x, gh_w = hermgauss(self.num_gauss_hermite_points)
 
-        gh_w = gh_w.reshape(-1, 1) / np.sqrt(np.pi)
+        gh_w = gh_w / np.sqrt(np.pi)
         shape = tf.shape(Fmu)
         Fmu, Fvar, Y = [tf.reshape(e, (-1, 1)) for e in (Fmu, Fvar, Y)]
         X = gh_x[None, :] * tf.sqrt(2.0 * Fvar) + Fmu
@@ -105,7 +105,8 @@ class Likelihood(Parameterized):
         Y = tf.tile(Y, [1, self.num_gauss_hermite_points])  # broadcast Y to match X
 
         logp = self.logp(X, Y)
-        return tf.reshape(tf.log(tf.matmul(tf.exp(logp), gh_w)), shape)
+        return tf.reshape(tf.reduce_logsumexp(logp + tf.log(gh_w), axis=1), shape)
+
 
     def variational_expectations(self, Fmu, Fvar, Y):
         """
