@@ -1,0 +1,112 @@
+\title{Multi Output $\GP$s}
+\author{}
+\date{\today}
+
+\documentclass[12pt]{article}
+\usepackage{cancel}
+\usepackage{amssymb}
+\usepackage{amsmath}% http://ctan.org/pkg/amsmath
+\newcommand{\NN}{\mathcal{N}}
+\newcommand{\LL}{\mathcal{L}}
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\EE}{\mathbb{E}}
+\newcommand{\valpha}{\boldsymbol\alpha}
+\newcommand*{\KL}[2]{\ensuremath{\operatorname{KL}[#1 \,\|\, #2]}}
+
+\newcommand{\vf}{\mathbf{f}}
+\newcommand{\vF}{\mathbf{F}}
+\newcommand{\vg}{\mathbf{g}}
+\newcommand{\vW}{\mathbf{W}}
+\newcommand{\vI}{\mathbf{I}}
+\newcommand{\vZ}{\mathbf{Z}}
+\newcommand{\vu}{\mathbf{u}}
+\newcommand{\vU}{\mathbf{U}}
+\newcommand{\vX}{\mathbf{X}}
+\newcommand{\vY}{\mathbf{Y}}
+
+\usepackage{parskip}  % no indent at start of paragraph, but vspace between paragraphs
+\newcommand{\GP}{\mathcal{GP}}
+
+\begin{document}
+\maketitle
+
+\section{The Maths}
+\subsection{Generative Model}
+
+We denote 
+\begin{itemize}
+\item $X \in \RR^{N \times D}$ the input
+\item $Y \in \RR^{N \times P}$ the output
+\item $k_{1..L}$, $L$ kernels on $\RR^{N \times D}$
+\item $g_{1..L}$, $L$ independent $\GP$s  with $g_l \sim \GP(0,k_l)$
+\item $f_{1..P}$, $P$ correlated  $\GP$s  with $\vf = \vW \vg$ 
+\end{itemize}
+
+
+\subsection{Variational Inference}
+
+We build an approximation to the posterior over $\vf$ as $q(\vf)$.
+Assuming some likelihood $p(\vY|\vf)$ we have the ELBO
+
+\[
+	\mathcal{L}(q) = \EE_{q(\vf)}\log\,p(\vY|\vf) - \KL{q(\vf)}{p(\vf)}
+\]
+
+
+\section{Factors of Variability}
+
+\subsection{Multi-Output Kernels}
+\begin{itemize}
+\item Independent / Correlated output (through $\vW$)
+\item Shared / Separate Kernel
+\item Shared / Separate imput
+\end{itemize}
+
+
+\subsection{Approximating distribution}
+
+\begin{itemize}
+\item Sparse $f$ : $q(\vf) = q(\vf(\vZ))p(\vf|\vf(\vZ))$
+\item Sparse $g$ : $q(\vf,\vg) = q(\vg(\vZ))p(\vg|\vg(\vZ))\delta[\vf= \vW \vg]$
+\end{itemize}
+
+
+
+\section{Implementation considerations}
+
+We build 3 objects:
+
+\begin{itemize}
+\item Mok classes
+\item Feature classes 
+\item conditional functions
+\end{itemize}
+
+\subsection{MoK classes}
+
+They describe Mok kernel properties:
+\begin{itemize}
+\item mixed output or not
+\item shared kernel or not
+\item ..
+\end{itemize} 
+
+\subsection{Feature classes}
+
+They describe 
+\begin{itemize}
+\item who is made sparse ($\vf$ or $\vg$)
+\item wheter inducing features are shared or not across latents
+\end{itemize}  
+
+\subsection{Conditional functions}
+
+They take as input 
+\begin{itemize}
+\item a Mok object: specifying the model
+\item a Feature object\\ declaring inducing features $\vZ$ and variables ($\vU=\vg(\vZ)$ or $\vU=\vf(\vZ)$)
+\item $q(\vU)$, whose covariance shape reflects its factorization 
+\end{itemize}  
+
+
+\end{document}
