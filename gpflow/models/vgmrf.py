@@ -292,7 +292,7 @@ def diag_chol_band_inverse(Lb):
 # TODO implement
 def chol_band_inverse(Lb):
     """
-    Computes the diagonal of M^-1 for M = LL^T
+    Computes the band of M^-1 for M = LL^T
     :param L: [..., B, N]
     :return: [..., N]
     """
