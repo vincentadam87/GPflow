@@ -135,12 +135,9 @@ class VGMRF(Model):
         return self._build_likelihood()
 
 
-
-
 class VGMRF_banded(Model):
     """
     This is the Variational GMRF : using band diagonal precision matrices
-
     """
     def __init__(self, X, Y, P_band, likelihood,
                  num_latent=None,
@@ -149,6 +146,7 @@ class VGMRF_banded(Model):
         """
         - X is a data matrix, size N x D
         - Y is a data matrix, size N x R
+        - P_band is a matrix, size N x B
         - num_data is the total number of observations, default to X.shape[0]
           (relevant when feeding in external minibatches)
         """
@@ -163,12 +161,10 @@ class VGMRF_banded(Model):
             # columns are treated independently
             Y = DataHolder(Y)
         self.X, self.Y = X, Y
-
-
         self.likelihood = likelihood
 
         # prior precision matrix
-        self.band_width = P_band.shape[0]
+        self.band_width = P_band.shape[1]
         self.P_band = tf.constant(P_band,dtype=settings.float_type)
 
         # TODO :  band -> cholesky band
@@ -181,8 +177,7 @@ class VGMRF_banded(Model):
         # Initialize the variational parameters
         self.q_mu = Parameter(np.zeros((self.num_data, self.num_latent), dtype=settings.float_type))
 
-        # TODO: check dim ordering (keep as in SVGPVGMR)
-        shape = (self.num_latent,self.band_width,self.num_data) # R x B x N
+        shape = (self.num_latent,self.band_width,self.num_data) # R x N x B
         q_sqrt_prec_band = np.zeros(shape, dtype=settings.float_type)
         q_sqrt_prec_band[0,:,:] = 1. # initialize as identity stored as band
         self.q_sqrt_prec_band = Parameter(q_sqrt_prec_band, transform=transforms.LowerTriangular(self.num_data, self.num_latent))
@@ -251,8 +246,8 @@ class VGMRF_banded(Model):
 def cholesky_banded(band,lower=False):
     """
     Computes the banded cholesky decomposition of a banded matrix
-    :param band: the upper-diagonal band representation of a hermitian matrix ( K x N )
-    :return: chol: the upper-diagoanl band representation of the cholesky decomposition of band ( K x N )
+    :param band: the lower-diagonal band representation of a hermitian matrix ( N x K )
+    :return: chol: the lower-diagonal band representation of the cholesky decomposition of band ( N x K )
     """
     raise NotImplementedError
 
@@ -263,7 +258,7 @@ def matrix_triangular_solve_banded(b, rhs,lower=True,adjoint=False):
     matrix * output = rhs
     adjoint(matrix) * output = rhs (if adjoint==True)
     See : https://www.tensorflow.org/api_docs/python/tf/matrix_triangular_solve
-    :param b: [..., B, N]
+    :param b: [..., N, B]
     :param rhs: [..., N, R]
     :return: [...,N, R]
     """
@@ -273,9 +268,9 @@ def matrix_triangular_solve_banded(b, rhs,lower=True,adjoint=False):
 def band_matrices_product(b1, b2, transpose_b2=False):
     """
     Computes band representation of M1 * M2 (or M1 * M2^T), which are given in band form
-    :param b1: B x N
-    :param b2: B x N
-    :return: (2 x B - 1) x N
+    :param b1: N x B
+    :param b2: N x B
+    :return: N x B
     """
     raise NotImplementedError
 
@@ -283,8 +278,8 @@ def band_matrices_product(b1, b2, transpose_b2=False):
 def diag_chol_band_inverse(Lb):
     """
     Computes the diagonal of M^-1 for M = LL^T
-    :param L: [..., B, N]
-    :return: [..., B, N]
+    :param L: [..., N, B]
+    :return: [..., N, B]
     """
     raise NotImplementedError
 
@@ -293,7 +288,9 @@ def diag_chol_band_inverse(Lb):
 def chol_band_inverse(Lb):
     """
     Computes the band of M^-1 for M = LL^T
-    :param L: [..., B, N]
+    :param L: [..., N, B]
     :return: [..., N]
     """
     raise NotImplementedError
+
+
