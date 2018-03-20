@@ -45,6 +45,65 @@ def gauss_kl(q_mu, q_sqrt, K=None):
     If K is None, compute the KL divergence to p(x) = N(0, I) instead.
     """
 
+    white = True if K is None else False
+    diag = True if q_sqrt.get_shape().ndims == 2 else False
+
+    if white:
+        alpha = q_mu  # M x L
+    else:
+        batch = True if K.get_shape().ndims == 3 else False
+        Lp = tf.cholesky(K)  # L x M x M or M x M
+        q_mu = tf.transpose(q_mu)[:, :, None] if batch else q_mu  # L x M x 1 or M x L
+        alpha = tf.matrix_triangular_solve(Lp, q_mu, lower=True)  # L x M x 1 or M x L
+
+    if diag:
+        L = tf.shape(q_sqrt)[1]
+        Lq_diag = q_sqrt  # M x L
+        Lq = tf.matrix_diag(tf.transpose(q_sqrt)) # L x M x M
+    else:
+        L = tf.shape(q_sqrt)[0]
+        Lq = tf.matrix_band_part(q_sqrt, -1, 0)  # force lower triangle # L x M x M
+        Lq_diag = tf.matrix_diag_part(Lq) # # M x L
+
+    # Mahalanobis term: μqᵀ Σp⁻¹ μq
+    mahalanobis = tf.reduce_sum(tf.square(alpha))
+
+    # Constant term: - N x M
+    constant = - tf.size(q_mu, out_type=settings.float_type)  # ML
+
+    # Log-determinant of the covariance of q(x):
+    logdet_qcov = tf.reduce_sum(tf.log(tf.square(Lq_diag)))
+
+    # Trace term: tr(Σp⁻¹ Σq)
+    if white:
+        trace = tf.reduce_sum(tf.square(Lq))
+    else:
+        # If K is L x M x M, no need to tile the cholesky anymore
+        # TODO: broadcast instead of tile when tf allows (not implemented in tf <= 1.6.0)
+        Lp_tiled = Lp if batch else tf.tile(tf.expand_dims(Lp, 0), [L, 1, 1])
+        LpiLq = tf.matrix_triangular_solve(Lp_tiled, Lq, lower=True)
+        trace = tf.reduce_sum(tf.square(LpiLq))
+
+    twoKL = mahalanobis + constant - logdet_qcov + trace
+
+    # Log-determinant of the covariance of p(x):
+    if not white:
+        log_sqdiag_Lp = tf.log(tf.square(tf.matrix_diag_part(Lp)))
+        sum_log_sqdiag_Lp = tf.reduce_sum(log_sqdiag_Lp)
+        # If K is L x M x M, num_latent is no longer implicit, no need to multiply the single kernel logdet
+        scale = 1.0 if batch else tf.cast(L, settings.float_type)
+        prior_logdet = scale * sum_log_sqdiag_Lp
+        twoKL += prior_logdet
+
+    return 0.5 * twoKL
+
+
+@name_scope()
+def gauss_kl_diag(q_mu, q_sqrt, K=None):
+    """
+    Same as gauss_kl except that the diag case is treated differently
+    """
+
     white = K is None
     diag = q_sqrt.get_shape().ndims == 2
 
@@ -60,9 +119,11 @@ def gauss_kl(q_mu, q_sqrt, K=None):
         alpha = tf.matrix_triangular_solve(Lp, q_mu, lower=True)  # B x M x 1 or M x B
 
     if diag:
+        #assert B == tf.shape(q_sqrt)[1]
         Lq = Lq_diag = q_sqrt
         Lq_full = tf.matrix_diag(tf.transpose(q_sqrt))  # B x M x M
     else:
+        #assert B == tf.shape(q_sqrt)[0]
         Lq = Lq_full = tf.matrix_band_part(q_sqrt, -1, 0)  # force lower triangle # B x M x M
         Lq_diag = tf.matrix_diag_part(Lq)  # M x B
 
@@ -79,6 +140,7 @@ def gauss_kl(q_mu, q_sqrt, K=None):
     if white:
         trace = tf.reduce_sum(tf.square(Lq))
     else:
+        #assert M == tf.shape(Lp)[-1]
         if diag and not batch:
             # K is M x M and q_sqrt is M x B: fast specialisation
             LpT = tf.transpose(Lp)  # M x M
@@ -91,6 +153,33 @@ def gauss_kl(q_mu, q_sqrt, K=None):
             LpiLq = tf.matrix_triangular_solve(Lp_full, Lq_full, lower=True)
             trace = tf.reduce_sum(tf.square(LpiLq))
 
+
+        """    
+        if diag and batch:
+            # TODO : to test again when matrix_triangular_solve supports broadcasting
+            '''
+            LpT = tf.transpose(Lp, (0, 2, 1))  # B x M x M
+            Lp_inv = tf.matrix_triangular_solve(Lp,
+                     tf.matrix_diag(tf.ones((B, M), dtype=settings.float_type)), lower = True)  # B x M x M
+            K_inv = tf.transpose(tf.matrix_diag_part(
+                    tf.matrix_triangular_solve(LpT, Lp_inv, lower=False))) # B x M x M - > B x M - > M x B
+            trace = tf.reduce_sum(K_inv * tf.square(q_sqrt))
+            '''
+            Lq = tf.matrix_diag(tf.transpose(q_sqrt))  # B x M x M
+            LpiLq = tf.matrix_triangular_solve(Lp, Lq, lower=True)
+            trace = tf.reduce_sum(tf.square(LpiLq))
+        elif diag and (not batch):
+            LpT = tf.transpose(Lp)  # M x M
+            Lp_inv = tf.matrix_triangular_solve(Lp, tf.eye(M, dtype=settings.float_type),lower=True)  # M x M
+            K_inv = tf.matrix_diag_part(tf.matrix_triangular_solve(LpT, Lp_inv, lower=False))[:, None]  # M x M -> M x 1
+            trace = tf.reduce_sum(K_inv * tf.square(q_sqrt))
+        elif not diag:
+            # TODO: broadcast instead of tile when tf allows (not implemented in tf <= 1.6.0)
+            Lp_tiled = Lp if batch else tf.tile(tf.expand_dims(Lp, 0), [B, 1, 1])
+            LpiLq = tf.matrix_triangular_solve(Lp_tiled, Lq, lower=True)
+            trace = tf.reduce_sum(tf.square(LpiLq))
+        """
+
     twoKL = mahalanobis + constant - logdet_qcov + trace
 
     # Log-determinant of the covariance of p(x):
@@ -99,6 +188,7 @@ def gauss_kl(q_mu, q_sqrt, K=None):
         sum_log_sqdiag_Lp = tf.reduce_sum(log_sqdiag_Lp)
         # If K is B x M x M, num_latent is no longer implicit, no need to multiply the single kernel logdet
         scale = 1.0 if batch else tf.cast(B, settings.float_type)
-        twoKL += scale * sum_log_sqdiag_Lp
+        prior_logdet = scale * sum_log_sqdiag_Lp
+        twoKL += prior_logdet
 
     return 0.5 * twoKL
